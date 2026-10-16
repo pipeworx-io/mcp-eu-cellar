@@ -831,6 +831,549 @@ const RESOURCE_TYPE_HINTS: Record<string, string> = {
   CONS_TEXT: 'Consolidated text',
 };
 
+// ── national transposition measures (NIM) ──────────────────────────
+//
+// Verified live against the CELLAR SPARQL endpoint 2026-10-16, using
+// Directive (EU) 2019/1937 (whistleblowers, CELEX 32019L1937) as the probe:
+//   <nim work> cdm:measure_national_implementing_implements_resource_legal <directive work>
+//   <nim work> cdm:measure_national_implementing_implemented_by_country <authority/country/XXX>
+// plus cdm:work_title, cdm:work_date_document, cdm:measure_national_implementing_date_notification,
+// cdm:measure_national_implementing_date_official_journal (sentinel "1001-01-01" = unknown — the
+// CDM ontology's own placeholder, not a real Y1001 publication date; nulled out below),
+// cdm:measure_national_implementing_name_official_journal / _number_official_journal /
+// _type_act. None of this is documented outside the ontology itself — found by introspecting
+// the live predicates of a known directive and a known NIM work, not from a spec.
+//
+// ORDERING (fixed 2026-10-16, fleet #3196): CELLAR carries no "this is the principal/main
+// transposing act" flag anywhere in the NIM record — verified live by dumping every triple
+// on several French and German NIM works for 32019L1937 (cdm:measure_national_implementing_type_act
+// only ever held an act-form label like "Loi"/"Code"/"Gesetz"/"Verordnung", never a
+// principal/additional marker). A member state can notify dozens of measures per directive —
+// France has 36 for the Whistleblower Directive, Czechia 80, Croatia 93 — mixing the actual
+// transposing act with decades-old codal provisions CELLAR also links as relevant. Sorting by
+// document_date ascending (the old behaviour) surfaces whichever measure happens to be oldest,
+// which for France was the Loi du 29 juillet 1881 (press law) — not useful. Measures are now
+// ranked by (1) how many content words a measure's own title shares with the directive's own
+// title, read in WHICHEVER of CELLAR's ~24 language variants scores highest (so a French loi's
+// French title is compared against the directive's French title, a German Gesetz's title
+// against the German one, with no per-country language table to maintain), then (2) newest
+// document_date first. A national law that actually transposes a directive conventionally
+// echoes the directive's own title in its own preamble/title, so this surfaces the real
+// transposing act well ahead of tangential citations without needing a hand-kept list of
+// "the one true measure" per directive. Verified live: FR/32019L1937 puts loi n° 2022-401 among
+// the top entries (tied for rank 2-4 by document_date within the matched group); DE puts the
+// Hinweisgeberschutzgesetz at rank ~6 of 17 (well inside the default limit_per_state=10, far
+// ahead of its old rank 16/17); CZ puts "Zákon č. 171/2023 Sb., o ochraně oznamovatelů" at rank
+// 1 of 80; HR puts "Zakon o zaštiti prijavitelja nepravilnosti" and its own amendments at ranks
+// 1-3 of 93. This is a best-effort signal, not a guarantee — CELLAR itself does not say which
+// measure is "the" one.
+
+interface MemberState {
+  iso3: string;
+  iso2: string;
+  name: string;
+}
+
+/** The 27 current EU member states (post-Brexit, post-Croatia-2013; no change since). Fixed —
+ *  this is a closed, rarely-changing enumeration, not a corpus, so it is a literal here rather
+ *  than a KV-baked index. */
+const EU_MEMBER_STATES: MemberState[] = [
+  { iso3: 'AUT', iso2: 'AT', name: 'Austria' },
+  { iso3: 'BEL', iso2: 'BE', name: 'Belgium' },
+  { iso3: 'BGR', iso2: 'BG', name: 'Bulgaria' },
+  { iso3: 'HRV', iso2: 'HR', name: 'Croatia' },
+  { iso3: 'CYP', iso2: 'CY', name: 'Cyprus' },
+  { iso3: 'CZE', iso2: 'CZ', name: 'Czechia' },
+  { iso3: 'DNK', iso2: 'DK', name: 'Denmark' },
+  { iso3: 'EST', iso2: 'EE', name: 'Estonia' },
+  { iso3: 'FIN', iso2: 'FI', name: 'Finland' },
+  { iso3: 'FRA', iso2: 'FR', name: 'France' },
+  { iso3: 'DEU', iso2: 'DE', name: 'Germany' },
+  { iso3: 'GRC', iso2: 'GR', name: 'Greece' },
+  { iso3: 'HUN', iso2: 'HU', name: 'Hungary' },
+  { iso3: 'IRL', iso2: 'IE', name: 'Ireland' },
+  { iso3: 'ITA', iso2: 'IT', name: 'Italy' },
+  { iso3: 'LVA', iso2: 'LV', name: 'Latvia' },
+  { iso3: 'LTU', iso2: 'LT', name: 'Lithuania' },
+  { iso3: 'LUX', iso2: 'LU', name: 'Luxembourg' },
+  { iso3: 'MLT', iso2: 'MT', name: 'Malta' },
+  { iso3: 'NLD', iso2: 'NL', name: 'Netherlands' },
+  { iso3: 'POL', iso2: 'PL', name: 'Poland' },
+  { iso3: 'PRT', iso2: 'PT', name: 'Portugal' },
+  { iso3: 'ROU', iso2: 'RO', name: 'Romania' },
+  { iso3: 'SVK', iso2: 'SK', name: 'Slovakia' },
+  { iso3: 'SVN', iso2: 'SI', name: 'Slovenia' },
+  { iso3: 'ESP', iso2: 'ES', name: 'Spain' },
+  { iso3: 'SWE', iso2: 'SE', name: 'Sweden' },
+];
+const EU_BY_ISO3 = new Map(EU_MEMBER_STATES.map((m) => [m.iso3, m]));
+
+/** Live Pipeworx national-legislation packs that cover a member state, named here as the
+ *  pack + tools an agent should call next — never a resolved document id, which CELLAR's NIM
+ *  record does not carry (it gives the national gazette citation, not that pack's internal id). */
+const NATIONAL_PACK_BY_ISO3: Record<string, { pack: string; search_tool: string; provision_tool: string; identifier: string }> = {
+  DEU: { pack: 'de-gesetze', search_tool: 'gesetze_search', provision_tool: 'gesetze_provision', identifier: 'law abbreviation (e.g. "HinSchG") + provision number' },
+  AUT: { pack: 'at-ris', search_tool: 'at_search_legislation', provision_tool: 'at_get_provision', identifier: 'Gesetzesnummer + paragraph' },
+  ITA: { pack: 'it-normattiva', search_tool: 'it_normattiva_search', provision_tool: 'it_normattiva_get_article', identifier: 'URN' },
+  NLD: { pack: 'nl-wetten', search_tool: 'nl_wetten_search', provision_tool: 'nl_wetten_get_article', identifier: 'BWB id' },
+  FRA: { pack: 'france-legi', search_tool: 'fr_legi_search', provision_tool: 'fr_code_article', identifier: 'code + article number' },
+  ESP: { pack: 'boe-legislacion', search_tool: 'boe_search_law', provision_tool: 'boe_law', identifier: 'BOE id' },
+};
+
+/** Common names for acts worth tracking transposition for, where the official EU title (what
+ *  full-text search matches against) does not contain the colloquial name — "whistleblower"
+ *  never appears in Directive (EU) 2019/1937's own title, verified live 2026-10-16. Small and
+ *  hand-kept, like RESOURCE_TYPE_HINTS above; not a generated index. */
+const DIRECTIVE_ALIASES: Record<string, string> = {
+  'gdpr': '32016R0679',
+  'general data protection regulation': '32016R0679',
+  'whistleblower directive': '32019L1937',
+  'whistleblowing directive': '32019L1937',
+  'whistleblower protection directive': '32019L1937',
+  'ai act': '32024R1689',
+  'artificial intelligence act': '32024R1689',
+  'nis2': '32022L2555',
+  'nis2 directive': '32022L2555',
+  'dsa': '32022R2065',
+  'digital services act': '32022R2065',
+  'dma': '32022R1925',
+  'digital markets act': '32022R1925',
+  'dora': '32022R2554',
+  'digital operational resilience act': '32022R2554',
+  'work-life balance directive': '32019L1158',
+  'work life balance directive': '32019L1158',
+  'pay transparency directive': '32023L0970',
+  'platform work directive': '32024L2831',
+  'working time directive': '32003L0088',
+  'posted workers directive': '31996L0071',
+  'late payment directive': '32011L0007',
+  'unfair commercial practices directive': '32005L0029',
+  'consumer rights directive': '32011L0083',
+};
+
+const CELEX_RE = /^\d{5}[A-Z]{1,2}\d{3,5}(\(\d+\))?$/i;
+const NATURAL_NUMBER_RE = /^\(?(?:EU|EC|EEC)?\)?\s*(\d{4})\/(\d{1,5})$/i;
+
+function countryIso3FromUri(uri: string | null): string | null {
+  if (!uri) return null;
+  const seg = lastSegment(uri);
+  return seg ? seg.toUpperCase() : null;
+}
+
+/** Null out the CDM ontology's own placeholder date, not a real Y1001 record. */
+function nullSentinelDate(d: string | null): string | null {
+  if (!d) return null;
+  return d.startsWith('1001-') ? null : d;
+}
+
+// ── subject-word ranking for national measures (see ORDERING note above) ──
+
+/** A bare 4-digit year, e.g. "2019" — excluded from the word sets below: it coincidentally
+ *  matches any unrelated national provision dated the same calendar year as the directive,
+ *  without saying anything about subject. A combined form like "2019/1937" is specific enough
+ *  to keep. */
+const BARE_YEAR_RE = /^\d{4}$/;
+
+/** Lowercased content words (letters/digits, >= 4 chars, unicode-aware so French/German/
+ *  Croatian/Czech/Cyrillic text all tokenize) from a title, for subject-overlap scoring. */
+function titleWords(title: string | null): Set<string> {
+  if (!title) return new Set();
+  const matches = title.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}]*(?:\/\d+)?/gu) ?? [];
+  return new Set(matches.filter((w) => w.length >= 4 && !BARE_YEAR_RE.test(w)));
+}
+
+/** All titles CELLAR holds for one EU Work (every language it has an expression in), as word
+ *  sets — one extra SPARQL call per transposition lookup, used to score how closely a national
+ *  measure's own title echoes the directive's subject. See the ORDERING note above `MemberState`. */
+async function fetchDirectiveTitleWordSets(workUri: string): Promise<Set<string>[]> {
+  const sparql = `PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+SELECT DISTINCT ?title WHERE {
+  ?exp cdm:expression_belongs_to_work <${workUri}> ;
+       cdm:expression_title ?title .
+}
+LIMIT 40`;
+  const res = await runSparql(sparql);
+  const sets: Set<string>[] = [];
+  for (const row of res.results.bindings) {
+    const w = titleWords(val(row, 'title'));
+    if (w.size) sets.push(w);
+  }
+  return sets;
+}
+
+/** How many words a national measure's title shares with the directive's own title, taking
+ *  whichever of CELLAR's language variants scores highest. Not a guarantee of relevance — a
+ *  ranking signal, since CELLAR's NIM record carries no principal/main-measure flag. */
+function subjectScore(title: string | null, directiveWordSets: Set<string>[]): number {
+  const words = titleWords(title);
+  if (!words.size || !directiveWordSets.length) return 0;
+  let best = 0;
+  for (const dset of directiveWordSets) {
+    let n = 0;
+    for (const w of words) if (dset.has(w)) n++;
+    if (n > best) best = n;
+  }
+  return best;
+}
+
+interface ResolvedWork {
+  work: string;
+  celex: string | null;
+  title: string | null;
+  typeCode: string | null;
+  documentDate: string | null;
+}
+
+async function resolveByCelex(celex: string): Promise<ResolvedWork[]> {
+  const sparql = `PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+SELECT DISTINCT ?work ?title ?type ?date WHERE {
+  ?work cdm:resource_legal_id_celex "${sparqlString(celex)}"^^xsd:string .
+  OPTIONAL { ?exp cdm:expression_belongs_to_work ?work ;
+                  cdm:expression_uses_language <http://publications.europa.eu/resource/authority/language/ENG> ;
+                  cdm:expression_title ?title }
+  OPTIONAL { ?work cdm:work_has_resource-type ?type }
+  OPTIONAL { ?work cdm:work_date_document ?date }
+}
+LIMIT 20`;
+  const res = await runSparql(sparql);
+  return res.results.bindings.map((row) => ({
+    work: val(row, 'work') as string,
+    celex,
+    title: val(row, 'title'),
+    typeCode: lastSegment(val(row, 'type')),
+    documentDate: val(row, 'date'),
+  }));
+}
+
+async function resolveByNaturalNumber(year: string, number: string): Promise<ResolvedWork[]> {
+  const sparql = `PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+SELECT DISTINCT ?work ?celex ?title ?type ?date WHERE {
+  ?work cdm:resource_legal_number_natural "${sparqlString(number)}"^^xsd:positiveInteger ;
+        cdm:resource_legal_year "${sparqlString(year)}"^^xsd:gYear .
+  OPTIONAL { ?work cdm:resource_legal_id_celex ?celex }
+  OPTIONAL { ?exp cdm:expression_belongs_to_work ?work ;
+                  cdm:expression_uses_language <http://publications.europa.eu/resource/authority/language/ENG> ;
+                  cdm:expression_title ?title }
+  OPTIONAL { ?work cdm:work_has_resource-type ?type }
+  OPTIONAL { ?work cdm:work_date_document ?date }
+}
+LIMIT 50`;
+  const res = await runSparql(sparql);
+  const out: ResolvedWork[] = [];
+  const seen = new Set<string>();
+  for (const row of res.results.bindings) {
+    const celex = val(row, 'celex');
+    const typeCode = lastSegment(val(row, 'type'));
+    // Keep only base enactments: sector-3 CELEX, no corrigendum/consolidated suffix.
+    if (!celex || !/^3\d{4}[A-Z]{1,2}\d{3,5}$/.test(celex)) continue;
+    if (typeCode === 'CORRIGENDUM' || typeCode === 'CONS_TEXT') continue;
+    const work = val(row, 'work') as string;
+    if (seen.has(work)) continue;
+    seen.add(work);
+    out.push({ work, celex, title: val(row, 'title'), typeCode, documentDate: val(row, 'date') });
+  }
+  return out;
+}
+
+async function resolveByTitle(query: string, resourceType?: string): Promise<ResolvedWork[]> {
+  const typeClause = resourceType
+    ? `?work cdm:work_has_resource-type <http://publications.europa.eu/resource/authority/resource-type/${resourceType}> .`
+    : '';
+  const sparql = `PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+SELECT DISTINCT ?work ?title ?celex ?type ?date WHERE {
+  ?exp cdm:expression_belongs_to_work ?work ;
+       cdm:expression_uses_language <http://publications.europa.eu/resource/authority/language/ENG> ;
+       cdm:expression_title ?title .
+  ?title bif:contains ${JSON.stringify(bifPhrase(query))} .
+  ${typeClause}
+  OPTIONAL { ?work cdm:resource_legal_id_celex ?celex }
+  OPTIONAL { ?work cdm:work_has_resource-type ?type }
+  OPTIONAL { ?work cdm:work_date_document ?date }
+}
+LIMIT 10`;
+  const res = await runSparql(sparql);
+  const seen = new Set<string>();
+  const out: ResolvedWork[] = [];
+  for (const row of res.results.bindings) {
+    const work = val(row, 'work');
+    if (!work || seen.has(work)) continue;
+    seen.add(work);
+    out.push({
+      work,
+      celex: val(row, 'celex'),
+      title: val(row, 'title'),
+      typeCode: lastSegment(val(row, 'type')),
+      documentDate: val(row, 'date'),
+    });
+  }
+  return out;
+}
+
+/** Resolve free-form input (CELEX, "YYYY/NNNN", or a common name) to zero/one/many candidate
+ *  EU Works. Never requires the caller to write SPARQL. */
+async function resolveDirective(
+  input: string,
+): Promise<{ resolved?: ResolvedWork; candidates?: ResolvedWork[] }> {
+  const trimmed = input.trim();
+  const compact = trimmed.toUpperCase().replace(/\s+/g, '');
+
+  if (CELEX_RE.test(compact)) {
+    const found = await resolveByCelex(compact);
+    if (found.length) return { resolved: found[0] };
+    return {};
+  }
+
+  const natMatch = NATURAL_NUMBER_RE.exec(trimmed);
+  if (natMatch) {
+    const candidates = await resolveByNaturalNumber(natMatch[1], natMatch[2]);
+    if (candidates.length === 1) return { resolved: candidates[0] };
+    if (candidates.length > 1) return { candidates };
+    return {};
+  }
+
+  const aliasKey = trimmed.toLowerCase().replace(/\s+/g, ' ').trim();
+  const aliasCelex = DIRECTIVE_ALIASES[aliasKey];
+  if (aliasCelex) {
+    const found = await resolveByCelex(aliasCelex);
+    if (found.length) return { resolved: found[0] };
+  }
+
+  // Free-text title search: try as a Directive first, then a Regulation, then unrestricted.
+  for (const type of ['DIR', 'REG', undefined]) {
+    const candidates = await resolveByTitle(trimmed, type);
+    if (candidates.length === 1) return { resolved: candidates[0] };
+    if (candidates.length > 1) return { candidates: candidates.slice(0, 5) };
+  }
+  return {};
+}
+
+interface NimRow {
+  countryIso3: string;
+  title: string | null;
+  documentDate: string | null;
+  notificationDate: string | null;
+  officialJournalDate: string | null;
+  officialJournalName: string | null;
+  officialJournalNumber: string | null;
+  typeAct: string | null;
+}
+
+async function fetchNationalMeasures(workUri: string): Promise<NimRow[]> {
+  const sparql = `PREFIX cdm: <http://publications.europa.eu/ontology/cdm#>
+SELECT DISTINCT ?nim ?country ?title ?docdate ?notif ?ojdate ?ojname ?ojnum ?typeact WHERE {
+  ?nim cdm:measure_national_implementing_implements_resource_legal <${workUri}> ;
+       cdm:measure_national_implementing_implemented_by_country ?country .
+  OPTIONAL { ?nim cdm:work_title ?title }
+  OPTIONAL { ?nim cdm:work_date_document ?docdate }
+  OPTIONAL { ?nim cdm:measure_national_implementing_date_notification ?notif }
+  OPTIONAL { ?nim cdm:measure_national_implementing_date_official_journal ?ojdate }
+  OPTIONAL { ?nim cdm:measure_national_implementing_name_official_journal ?ojname }
+  OPTIONAL { ?nim cdm:measure_national_implementing_number_official_journal ?ojnum }
+  OPTIONAL { ?nim cdm:measure_national_implementing_type_act ?typeact }
+}
+LIMIT 3000`;
+  const res = await runSparql(sparql);
+  const out: NimRow[] = [];
+  for (const row of res.results.bindings) {
+    const iso3 = countryIso3FromUri(val(row, 'country'));
+    if (!iso3) continue;
+    out.push({
+      countryIso3: iso3,
+      title: val(row, 'title'),
+      documentDate: val(row, 'docdate'),
+      notificationDate: val(row, 'notif'),
+      officialJournalDate: nullSentinelDate(val(row, 'ojdate')),
+      officialJournalName: val(row, 'ojname'),
+      officialJournalNumber: val(row, 'ojnum'),
+      typeAct: val(row, 'typeact'),
+    });
+  }
+  return out;
+}
+
+function resolveMemberStateFilter(raw: string): MemberState | null {
+  const q = raw.trim();
+  const upper = q.toUpperCase();
+  for (const m of EU_MEMBER_STATES) {
+    if (m.iso3 === upper || m.iso2 === upper || m.name.toUpperCase() === upper) return m;
+  }
+  return null;
+}
+
+async function transpositionMeasures(args: Record<string, unknown>) {
+  const input = String(args.directive ?? '').trim();
+  if (!input) {
+    throw new Error('`directive` is required — give a CELEX number (e.g. 32019L1937), the "2019/1937" form, or a common name (e.g. "Whistleblower Directive").');
+  }
+  const limitPerState = clampLimit(args.limit_per_state, 10, 50);
+  let stateFilter: MemberState | null = null;
+  if (args.member_state) {
+    stateFilter = resolveMemberStateFilter(String(args.member_state));
+    if (!stateFilter) {
+      throw new Error(`\`member_state\` "${String(args.member_state)}" is not a recognised current EU member state. Use an English name, ISO2 (e.g. "DE"), or ISO3 (e.g. "DEU") code.`);
+    }
+  }
+
+  const { resolved, candidates } = await resolveDirective(input);
+  if (!resolved) {
+    if (candidates && candidates.length) {
+      return {
+        found: false,
+        input,
+        candidates: candidates.map((c) => ({
+          celex: c.celex,
+          title: c.title,
+          type: c.typeCode,
+          type_label: c.typeCode ? RESOURCE_TYPE_HINTS[c.typeCode] ?? c.typeCode : null,
+        })),
+        note: `Multiple EU documents matched "${input}". Give the CELEX number of the one you mean.`,
+        source: 'CELLAR SPARQL endpoint, Publications Office of the European Union',
+        source_url: SPARQL,
+      };
+    }
+    return {
+      found: false,
+      input,
+      note: `No EU directive or regulation matches "${input}". Give a CELEX number (e.g. 32019L1937 for the Whistleblower Directive, 32016R0679 for GDPR), the "2019/1937" form, or try cellar_search_works first.`,
+      source: 'CELLAR SPARQL endpoint, Publications Office of the European Union',
+      source_url: SPARQL,
+    };
+  }
+
+  const typeCode = resolved.typeCode;
+  const typeLabel = typeCode ? RESOURCE_TYPE_HINTS[typeCode] ?? typeCode : null;
+  const isDirective = !!typeCode && /^DIR/.test(typeCode);
+  const isRegulation = !!typeCode && /^REG/.test(typeCode);
+
+  const nimRows = await fetchNationalMeasures(resolved.work);
+
+  const resolvedInfo = {
+    celex: resolved.celex,
+    title: resolved.title,
+    document_date: resolved.documentDate,
+    type: typeCode,
+    type_label: typeLabel,
+    eurlex_url: resolved.celex ? `${EURLEX_DOC}${encodeURIComponent(resolved.celex)}` : null,
+  };
+
+  if (isRegulation) {
+    return {
+      found: true,
+      input,
+      resolved: resolvedInfo,
+      transposition_applies: false,
+      note: `${resolvedInfo.celex ?? input} is a Regulation. Under Article 288 TFEU, regulations are directly applicable in every Member State in their entirety — they are not transposed into national law, so there are no national implementing measures to report.`,
+      unexpected_national_measures: nimRows.length
+        ? nimRows.length
+        : undefined,
+      source: 'CELLAR SPARQL endpoint, national transposition records, Publications Office of the European Union',
+      source_url: SPARQL,
+    };
+  }
+
+  if (!isDirective) {
+    return {
+      found: true,
+      input,
+      resolved: resolvedInfo,
+      transposition_applies: false,
+      note: `${resolvedInfo.celex ?? input} is ${typeLabel ? `a ${typeLabel}` : 'not a Directive'}, which this tool does not track member-state transposition for. ${
+        nimRows.length
+          ? `CELLAR nonetheless records ${nimRows.length} national-implementing-measure link(s) for it — unusual for this act type, shown below for completeness.`
+          : 'No national implementing measures are recorded for it.'
+      }`,
+      national_measures_found: nimRows.length,
+      source: 'CELLAR SPARQL endpoint, national transposition records, Publications Office of the European Union',
+      source_url: SPARQL,
+    };
+  }
+
+  // Directive: group by member state, filling gaps explicitly.
+  const byIso3 = new Map<string, NimRow[]>();
+  const otherJurisdictions = new Map<string, NimRow[]>();
+  for (const row of nimRows) {
+    const bucket = EU_BY_ISO3.has(row.countryIso3) ? byIso3 : otherJurisdictions;
+    const list = bucket.get(row.countryIso3) ?? [];
+    list.push(row);
+    bucket.set(row.countryIso3, list);
+  }
+  // Rank by subject-word overlap with the directive's own title first (best signal CELLAR's
+  // data supports for "is this measure actually about the directive"), then newest
+  // document_date first within a tier — see the ORDERING note above `MemberState`.
+  const directiveWordSets = await fetchDirectiveTitleWordSets(resolved.work);
+  const rankMeasure = (a: NimRow, b: NimRow) => {
+    const sa = subjectScore(a.title, directiveWordSets);
+    const sb = subjectScore(b.title, directiveWordSets);
+    if (sa !== sb) return sb - sa;
+    return (b.documentDate ?? '0000').localeCompare(a.documentDate ?? '0000');
+  };
+  for (const list of byIso3.values()) list.sort(rankMeasure);
+  for (const list of otherJurisdictions.values()) list.sort(rankMeasure);
+
+  const statesToReport = stateFilter ? [stateFilter] : EU_MEMBER_STATES;
+  const states = statesToReport.map((m) => {
+    const rows = byIso3.get(m.iso3) ?? [];
+    const pack = NATIONAL_PACK_BY_ISO3[m.iso3] ?? null;
+    return {
+      country_code: m.iso3,
+      country_code_iso2: m.iso2,
+      country_name: m.name,
+      has_measures: rows.length > 0,
+      measure_count: rows.length,
+      measures: rows.slice(0, limitPerState).map((r) => ({
+        title: r.title,
+        type_of_act: r.typeAct,
+        document_date: r.documentDate,
+        notification_date: r.notificationDate,
+        official_journal: r.officialJournalName || r.officialJournalNumber
+          ? { name: r.officialJournalName, number: r.officialJournalNumber, date: r.officialJournalDate }
+          : null,
+      })),
+      truncated: rows.length > limitPerState,
+      national_pack: pack
+        ? {
+            pack: pack.pack,
+            search_tool: pack.search_tool,
+            provision_tool: pack.provision_tool,
+            identifier_needed: pack.identifier,
+            how_to_use: `Call ${pack.search_tool} in the ${pack.pack} pack with words from a measure's title above to find it, then ${pack.provision_tool} (needs a ${pack.identifier}) for the provision text.`,
+          }
+        : null,
+      note: rows.length === 0 ? 'none recorded' : undefined,
+    };
+  });
+
+  const withMeasures = states.filter((s) => s.has_measures).length;
+
+  return {
+    found: true,
+    input,
+    resolved: resolvedInfo,
+    transposition_applies: true,
+    member_states_total: EU_MEMBER_STATES.length,
+    member_states_with_measures: stateFilter ? undefined : withMeasures,
+    member_states_without_measures: stateFilter ? undefined : EU_MEMBER_STATES.length - withMeasures,
+    states,
+    other_jurisdictions: otherJurisdictions.size
+      ? [...otherJurisdictions.entries()].map(([iso3, rows]) => ({
+          country_code: iso3,
+          measure_count: rows.length,
+          measures: rows.slice(0, limitPerState).map((r) => ({
+            title: r.title,
+            type_of_act: r.typeAct,
+            document_date: r.documentDate,
+          })),
+          note: 'Not a current EU member state — CELLAR still carries this record (e.g. a pre-withdrawal or EEA notification).',
+        }))
+      : undefined,
+    source: 'CELLAR SPARQL endpoint, national transposition records, Publications Office of the European Union',
+    source_url: SPARQL,
+  };
+}
+
 const tools: McpToolExport['tools'] = [
   {
     name: 'cellar_search_works',
@@ -902,6 +1445,29 @@ const tools: McpToolExport['tools'] = [
         },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'eu_transposition_measures',
+    description:
+      'For an EU Directive, the national implementing measures (NIM) that each member state has notified to the European Commission — the Publications Office\'s own transposition tracker, read live from CELLAR. Give a CELEX number (e.g. "32019L1937" for the Whistleblower Directive), the "2019/1937" short form, or a common name (e.g. "Whistleblower Directive", "GDPR"). For a Directive, returns every member state with its measure(s) — title, type of act, document date, notification date, national Official Journal citation — and member states with NO recorded measure are listed explicitly as "none recorded", never dropped. A member state can notify dozens of measures (France has 36 for the Whistleblower Directive, Czechia 80, Croatia 93), mixing the actual transposing act with older provisions CELLAR also links — CELLAR itself does not flag which measure is "the" one, so measures within each state are ordered by how closely a measure\'s own title echoes the directive\'s own title (read in whichever language scores best), then by newest document date, which in practice surfaces the real transposing act first or near first; `limit_per_state` (default 10) then truncates that ranked list, with `truncated: true` meaning more exist. Where a live Pipeworx national-legislation pack covers that state (Germany/de-gesetze, Austria/at-ris, Italy/it-normattiva, Netherlands/nl-wetten, France/france-legi, Spain/boe-legislacion) the matching pack and tools are named so you can drill into the actual provision text — no SPARQL required anywhere in this chain. A Regulation is answered directly: regulations are not transposed (Article 288 TFEU), so this says that plainly rather than returning an empty list.',
+    inputSchema: {
+      type: 'object' as const,
+      properties: {
+        directive: {
+          type: 'string',
+          description: 'CELEX number ("32019L1937"), short form ("2019/1937"), or common name ("Whistleblower Directive", "GDPR").',
+        },
+        member_state: {
+          type: 'string',
+          description: 'Optional: restrict to one EU member state — English name, ISO2 ("DE"), or ISO3 ("DEU"). Omit to get all 27.',
+        },
+        limit_per_state: {
+          type: 'number',
+          description: 'Max measures listed per member state before truncation (default 10, max 50). Some directives have dozens of related national measures per state.',
+        },
+      },
+      required: ['directive'],
     },
   },
 ];
@@ -1141,6 +1707,8 @@ async function callTool(name: string, args: Record<string, unknown>): Promise<un
       return work(args);
     case 'cellar_sparql':
       return rawSparql(args);
+    case 'eu_transposition_measures':
+      return transpositionMeasures(args);
     default:
       throw new Error(`Unknown tool: ${name}`);
   }
