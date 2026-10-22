@@ -1,6 +1,6 @@
 {
   "name": "@pipeworx/mcp-eu-cellar",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Every document the Publications Office of the European Union publishes — legislation, treaties, case law and COM proposals — searchable from the CELLAR repository.",
   "type": "module",
   "main": "src/index.ts",
@@ -26,7 +26,7 @@
     "@cloudflare/workers-types": "^4.20260405.1"
   },
   "pipeworx": {
-    "sourceHash": "v1-a7f1e2b926eb1b98785ff4f05ae1991fb0c2ed8745042f4496bf26262987840d",
-    "sourceCommit": "a03f96ed672b8c149593c64ecbf30280cabf084c"
+    "sourceHash": "v1-35ff0aab4730369410e8af31ab9494c7e093195793d94663dee84724d76e53c1",
+    "sourceCommit": "712a5e0171ea24483214329d0cd7efdfd9b80352"
   }
 }
