@@ -3,7 +3,7 @@
   "name": "io.github.pipeworx-io/eu-cellar",
   "title": "Eu Cellar",
   "description": "Every document the Publications Office of the European Union publishes — legislation, treaties…",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "websiteUrl": "https://pipeworx.io/packs/eu-cellar",
   "repository": {
     "url": "https://github.com/pipeworx-io/mcp-eu-cellar",

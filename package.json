@@ -1,12 +1,20 @@
 {
   "name": "@pipeworx/mcp-eu-cellar",
-  "version": "0.1.4",
+  "version": "0.2.0",
   "description": "Every document the Publications Office of the European Union publishes — legislation, treaties, case law and COM proposals — searchable from the CELLAR repository.",
   "type": "module",
-  "main": "src/index.ts",
-  "types": "src/index.ts",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./tools.json": "./tools.json",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "mcp-eu-cellar": "bin/cli.js"
+  },
+  "files": ["bin/", "lib/", "tools.json", "server.json"],
+  "engines": {
+    "node": ">=18"
   },
   "keywords": ["mcp", "mcp-server", "model-context-protocol", "pipeworx", "eu-cellar"],
   "license": "MIT",
@@ -14,19 +22,12 @@
     "type": "git",
     "url": "git+https://github.com/pipeworx-io/mcp-eu-cellar.git"
   },
-  "scripts": {
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "tsx": "^4.19.0"
-  },
-  "devDependencies": {
-    "typescript": "^5.9.3",
-    "@cloudflare/workers-types": "^4.20260405.1"
-  },
+  "mcpName": "io.github.pipeworx-io/eu-cellar",
   "pipeworx": {
-    "sourceHash": "v1-f78f95aed03c40946a23e4ccb0d6615e4e31211e742bb658fd1bed3289fb44df",
-    "sourceCommit": "722087a9bda73f85942e8f6bbfd598544cb0d490"
+    "mode": "gateway",
+    "slug": "eu-cellar",
+    "gatewaySlug": "eu-cellar",
+    "sourceHash": "v1-3a7f3e671a458bb91c599c7035564758471847b8b1e5d6892d0a7418eae23a73",
+    "sourceCommit": "bb047243cf27f32453103de186b8e6a8b6a1ce79"
   }
 }
